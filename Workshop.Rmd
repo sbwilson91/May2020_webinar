@@ -1,0 +1,659 @@
+---
+title: "R for Single Cell Analysis"
+author: "Sean Wilson"
+output: html_document
+toc: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Overview
+
+This document will use the backbone of a single cell RNA sequencing analysis to showcase some basic programming principles, and how you can utilise R to perform **Data Analysis** and generate some awesome graphs to showcase insights. 
+
+## Starting a new project
+
+Rstudio works best when you have different projects in isolation. A project is the collection of work you have on a particular... project! Let's start fresh by generating a new project for the work we are about to do.
+
+File > New Project > follow prompts. 
+
+This will generate new folder in the location you specified, which will include a **.RProj** file. This keeps tabs on all the work you do in this project. To access this project, when you open Rstudio you simply go to File > Open Project.. and click on the .RProj file you need.
+
+## R script, rmarkdown, rnotebook, shiny???
+
+These are all methods you can use for you work. An *R Script* is just a blank template that you write your code into.  
+*R Notebook* and *R Markdown* (this document is such) are more versatile as you can combine text/prose with code and you can use these to produce more report like documents.  
+*Shiny apps* are generated in a specific format and the outcome is to have interacive GUI for your work. These are great for displaying graphs and outcomes that people can interact with. I'm a big fan of these!  
+
+To generate a new chunk, hit *Ctrl + Alt + i*, or click *insert > R*  
+To run the chunk, hit the play button on the top right of the chunk. This will run all the code in that chunk. You can still hit Ctrl + Enter to run a single line or selection.
+
+```{r}
+print("Pressing the Play button or 'Ctrl Shift Enter' runs the chunk")
+```
+
+
+## Basic setup and loading of DATA!
+
+Let's now jump straight into it. We need to load two packages to perform our work: Seurat and tidyverse. Tidyverse is a really cool useful package that combines a bunch of smaller packages focused around data analysis, more specifically the idea of keeping your data 'tidy' for the most optimal workability. 'Tidy' data simply means your rows are variables of interest, your columns are samples. It becomes easier to understand as you do your analysis. Seurat is a package focused on single cell RNA analysis, and the one we will be using for our work.
+
+
+```{r libraries}
+library(Seurat)
+library(tidyverse)
+```
+
+The `Seurat` package contains functions to work with single cell data. We will run through many of the functions within this package as we go through the document.  
+
+The `tidyverse` loads multiple packages that are built within the framework of the [tidyverse](https://www.tidyverse.org/).
+
+There are two ways to use functions in your script. The first requires loading the package by calling `library(package_name)` as we have done in the previous chunk. This loads the entire pacakge into working memory and we can call functions as so:  
+```{r}
+date()
+```
+The second way is to call the package name first, then use `::` to call a function from that package: 
+```{r}
+lubridate::date()
+```
+The second option is great when you only need a specific functino from a package you already have installed and don't need the entire package, or if you are writing a function that you will source into your workflow from a seperate script.  
+
+Now we have an idea on how to call and use packages, let's dive into some work. All the information needed, and the tutorials this document is based on, can be found at [the Satija lab website](https://satijalab.org/seurat/)
+
+## Dataset
+
+The data files outputted from the sequencer take the form of fastq files, which contain the transcriptional reads and need to be put through a pipeline to read, map and count against a transcriptome. The standard pipeline uses the command line software cellranger, which performs these functions. The cellranger pipeline takes many cluster hours so I wont run through that today, however what I will cover is the output files from this that contain the count data. After running through this tutorial, we will take a look at submitting jobs to the cluster.
+
+### Download data from GEO
+
+There are online repositories where published datasets are stored. One such is the Gene Expression Omnibus (GEO) where our group has deposited a dataset that will work with today. You can download and unzip these files through the website interactively, or you can try and download within R.  
+
+```{r}
+#install.packages("GEOquery")
+GEOquery::getGEOSuppFiles(GEO = "GSE119561", baseDir = "data/", makeDirectory = T)
+untar(tarfile = "data/GSE119561/GSE119561_RAW.tar",
+      exdir = "data/GSE119561/extracted")
+```
+
+### Loading 10x data
+
+There are two forms of output I have worked with, .tsv and .mtx files containing parts of the data (cells, genes, counts), or .h5 files containing all data. We use these to create a "Seurat" object, which is the format the Seurat package works with. Both will produce the same outcome.  
+
+We are only going to use the "E6" organoid sample which was at 25 days of age. We need to rename these files as well, as the Read10X function requires the files to be specifically named:  
+
+```{r}
+list.files("data/GSE119561/extracted/", full.names = T)
+dir.create("data/D25/")
+file.copy(from = list.files("data/GSE119561/extracted/", full.names = T)[1:3],
+          to = c("data/D25/barcodes.tsv.gz",
+                 "data/D25/features.tsv.gz",
+                 "data/D25/matrix.mtx.gz"))
+list.files("data/D25/")
+data.1 <- Read10X(data.dir = "data/D25")
+
+#data.1 <- Read10X_h5(filename = #"/group/kidn1/Group-Little_MCRI/Data/SingleCellRNASeq/ReporterOrganoid/MAFB_GATA3_reporter/outs/filtere#d_gene_bc_matrices_h5.h5")
+
+seurat <- CreateSeuratObject(data.1, project = "D25_Organoid")
+seurat
+```
+
+Now we have generated the Seurat object, which we have designated to the variable "seurat". Now, lets have a brief look at how the object is structured, which allows us to learn how to manipulate it to get the data we want.
+
+```{r}
+str(seurat)
+```
+
+An important slot is "meta.data", which is where we will store all the extra information we generate or add, to tell us more about the cells. For example, I am going to add information about the age, line and media condition of this organoid which can be recalled at any time. It also means that down the track if I want to use this data in a merge, it will contain this information.
+
+```{r}
+colnames(seurat@meta.data)
+
+seurat$age <- 18
+seurat$line <- "MAFB:GATA3"
+seurat$condition <- "ATRA"
+seurat$batch <- 1
+seurat$sample <- "D18_MAFB:GATA3_ATRA"
+
+colnames(seurat@meta.data)
+
+head(seurat@meta.data)
+```
+
+
+In the above code I used the `$` to call upon specific columns. This is not the only way to do this. We can also use `[ ]` and `[[ ]]` to call for parts of the object. This works for vectors, matrix, data frame, tibble and other classes of objects as well.  
+The seurat object is acted upon so that calling the `$` it knows to look in the meta.data slot of the object, which is a data.frame object. Other ways we could access this data are:
+
+```{r}
+seurat[[]]
+seurat$age[1:5]
+seurat@meta.data[["age"]][1:5]
+
+
+```
+
+We can use these methods to not only call upon existing data, but assign new information we want to add.  
+Seurat contains a function `PercentageFeatureSet` which will calucuate the percentage expression of sets of features (genes) present within each cell of the data. This can then be assigned to a new meta.data slot for future reference.  
+
+```{r}
+# assigne percentage of mitochondrial gene expression
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^MT-")
+# assign percentage of ribosomal expression
+percent.ribo <- c(grep("^RPL", rownames(seurat), value = T), grep("^RPS", rownames(seurat), value = T)) # all ribosome genes
+seurat[["percent.ribo"]] <- PercentageFeatureSet(seurat, features = percent.ribo)
+# assign percentage of mitochondrial ribosomal genes
+percent.mitoribo <- c(grep("^MRPL", rownames(seurat), value = T), grep("^MRPS", rownames(seurat), value = T)) # all mitochonria ribosome genes
+seurat[["percent.mitoribo"]] <- PercentageFeatureSet(seurat, features = percent.mitoribo)
+
+# Visualize QC metrics as a violin plot
+VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo", "percent.mitoribo" ), ncol = 5)
+
+```
+
+
+There is a function in seurat that allows you to plot two variables against eachother, called `FeatureScatter`. This function wraps a ggplot2 generated plot in a specific way. I'll show you how we can make the same plot using ggplot as well.  
+
+```{r}
+FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+
+df <- seurat@meta.data # the meta.data is a data frame which ggplot can read to make a graph
+df %>% # the pipe symbol can be used to say "use this as the data for the following actions:"
+  ggplot(aes(nCount_RNA, percent.mt)) +
+  geom_point(aes(colour = orig.ident)) +
+  theme_classic()
+```
+
+I think at this point is a good time to explain the ` %>%  ` symbol: **the pipe**. It is used to take some object and use it in the next line of code. This is extremely useful when it comes to table manipulation, something we will do later on. For a small example, we will perform some manipulation on the data frame of the meta.data to show this. 
+Goal is to filter the data so only cells with counts lower than 50000 and percent mitochondria more than 5 (for examples purposes, not that we would only want this subset), arrange by feature count and then output as a table.  
+
+```{r}
+# no pipe:
+df.nopipe <- filter(df, nCount_RNA < 50000)
+df.nopipe <- filter(df.nopipe, percent.mt > 5)
+df.nopipe <- arrange(df.nopipe, -nFeature_RNA)
+df.nopipe
+
+
+# with the pipe:
+
+df %>% 
+  filter(nCount_RNA < 50000) %>% 
+  filter(percent.mt > 5) %>% 
+  arrange(-nFeature_RNA) 
+
+```
+
+The above plots can be used to filter out cells that are likely to be "bad". This can easily be done using the subset() function. These values will change between experiments.
+
+```{r}
+seurat <- subset(seurat, subset = nFeature_RNA > 1500 & percent.mt < 15)
+```
+
+The data now needs to be normalised and scaled to allow for comparisons to be made between cells and genes. Seurat v3 introduced a new, stand alone function that can perform the **Normalisation**, **Scaling** and identification of **Variable Features** in the dataset, all of which are required. The SCTransform function, which also allows for the regressing of any unwanted sources of variation such as mitochondrial gene expression.  
+One biological factor that can dominate downstream classificatino is cell cycle phase. We can "regress" this information out of the dimensional reduction calculation during the SCTransform step as well, so that cells will not form clusters based purely on their cell cycle stage instead of more cell type information. This requires a normalisation step prior to the SCTransform process, which we perform first.  
+We can identify the cell cycle state of each cell by running the CellCycleScoring function, which generates a score based on known genes and assigns a "Phase" to each cell, callable from seurat$Phase. To regress these out, for each gene Seurat models the relationship between gene expression and the S and G2M cell cycle scores. The scaled residuals of this model represent a ‘corrected’ expression matrix, that can be used downstream for dimensional reduction.
+
+```{r}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+seurat <- NormalizeData(seurat)
+seurat <- CellCycleScoring(seurat, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+seurat <- SCTransform(seurat, vars.to.regress = c("percent.mt", "G2M.Score", "S.Score"), verbose = FALSE)
+```
+
+
+At this point, the data is ready to undergo dimensional reduction
+
+### Dimensional Reduction
+
+Now the data is cleaned and prepared, we can beging to run dimensional reduction algorithms such as PCA, tSNE and UMAP to visualise and cluster the data.
+PCA uses the genes we identified as variable and pulls them into principal component spaces based on groups of genes that share an expression pattern.
+
+```{r}
+seurat <- RunPCA(seurat, verbose = F)
+#seurat <- RunUMAP(seurat, dims = 1:30, verbose = F)
+DimPlot(seurat, reduction = "pca", dims = c(1,2)) # can change the dimensions in the brackets to view different PCs
+
+```
+
+The reason we do this is to identify "dimensionality", which I believe translates to how many of the dimensions actually show us variable data, i.e. are informative. What I have seen is that our organoid data is so complex that more than 30 of the dimensions are giving us valuable information about variability, and I can only get the software to compute up to 30 anyway so that is the number I use.
+
+```{r}
+seurat  <- RunUMAP(seurat, dims = 1:30, seed.use = 250395, n.components = 3)
+DimPlot(seurat, reduction = "umap", group.by = "Phase", dims = c(1,2))
+DimPlot(seurat, reduction = "umap", group.by = "Phase", dims = c(2,3))
+
+```
+
+Now we have a dataset represented in lower dimensional space that we can use to visualise gene expression. Now we want to partition cells into clusters of similarity.
+
+### Clustering Cells
+
+Seurat has in built methods to cluster the cells. These are done using a graph-based approach. I wont go into detail here, you can dive down the rabbit hole yourself if you want, but here are the functions you run to cluster data. 
+
+```{r}
+seurat <- FindNeighbors(seurat, dims = 1:30, verbose = F)
+seurat <- FindClusters(seurat, resolution = seq(from = 0, to = 2, by = 0.1), verbose = F)
+# seq() generates a sequence of numbers, so we can generate clustering at different resolutions
+
+```
+
+This has not performed a number of clustering steps at differening resolutions. Lets look at the outputs, which are stored as new columsn in the meta.data:  
+
+```{r}
+head(seurat@meta.data, 20)[, 18:38]
+```
+
+The number indicates what cluster each cell has been assigned to at each resolution. The largest cluster is called 0 and the rest are labelled in decreasing size. We can visualise this relationship by using a package `clustree` developed by an ex PhD student from here, Luke Zappia.  
+
+```{r}
+library(ggraph)
+clustree::clustree(seurat, suffix = "SCT_snn_res.")
+```
+
+Again Seurat has specific functions to generate scatterplots (UMAPs) of both discrete and continuous data. Clusters are discrete are plotted using `DimPlot` while gene expression is continuous and plotted with `FeaturePlot`. 
+
+As I showed earlier though, we can plot both of these using the ggplot package as well, it's a bit trickier to access the data out of the Seurat objects but can be useful if you want to work outside of the Seurat framework. Once we have done all of the analysis steps we will look at the different parts to the data.
+
+For an example:  
+
+```{r}
+# this is my preferred colour scheme for plotting feature plots like these
+vcol <- viridis::viridis_pal()(20)
+DimPlot(seurat, group.by = "Phase")
+FeaturePlot(seurat, features = c("CENPF", "EPCAM", "SIX2", "percent.mt"), cols = vcol, order = T)
+```
+
+To save Seurat objects we need to write them to file. This can be done in a few ways but the way I prefer is to write them as `.rds` files using the `write_rds` function loaded with the tidyverse. The base R version is `saveRDS`.  
+Now we are exporting files, it's a good time to discuss directory setup. It is a very good idea to have a defined folder system in your directory that you can save your various scripts and outputs into. This not only makes it easier to find items you need when you have a lot of stuff in the directory, but you can also control what gets backed up to the git repository if you have one. I don't have a completely set directory layout but I recommend:  
+ - **output** for any .rds, .csv or other outputs  
+ - **scripts** for all the .R script files
+ - **docs** for .rmd documentation 
+ - **misc** for other miscellaneous items such as imported images  
+
+Within output I often have a seperate folder for seurat objects as well.  
+
+```{r}
+write_rds(seurat, "output/seurat/one_organoid.rds")
+#seurat <- read_rds("all_organoids.rds")
+```
+
+What we now have is a Seurat dataset containing gene expression, cluster and other information that we can use.
+
+```{r}
+head(seurat@meta.data, 2)
+```
+
+
+## Select clustering
+
+There is no "right" way to select the number of clusters within the dataset. If you have information in your meta.data that you want to compare between, such as age or condition of sample type, we can use this at any time for comparisons.  
+We previously ran the `FindClusters` function and used `clustree` to visualise how the dataset get broken into clusters at higher resolutions. Part of our job is to identify a resolution we are interested in looking at further. Clustree can help us identify at what resolution the cells have a fairly consistant structure.  
+A resolution of 0.9 looks to be steady so I will use this going forward. I can always change this if I feel the need further down the track.  
+
+```{r}
+seurat <- SetIdent(seurat, value = "SCT_snn_res.0.9")
+DimPlot(seurat, label = T)
+```
+
+As we are happy with this resolution, we can write them to a new meta.data slot for easier reference. 
+
+```{r}
+seurat$Cluster <- seurat$SCT_snn_res.0.9
+```
+
+
+## Marker analysis
+
+Now we have our clusters, the golden question: what are they?!?
+The following function will identify the genes that are differentially expressed in each cluster. I'll run through some of the settings you can use to alter how this is calculated.
+
+First though, I'll quickly explain "assays" in Seurat objects. These are where different forms of the counts are kept.
+
+```{r}
+Assays(seurat)
+```
+
+When you first read in the raw data it is put into the "RNA" assay. When we run the SCTransform operations, the variable genes that are operated on are put into the "SCT" assay. If you merge multiple datasets, the genes and transformation performed on them are placed into the "integrated" assay. If you have HTO (hashing) data, this will be placed into a "HTO" assay as well. These allow for different containers that will hold the types of data and you can interact with these seperately as required.  
+
+For identifying differential gene expression (DE), we are advised to use the "RNA" assay for best and most accurate results.
+
+```{r}
+DefaultAssay(seurat) <- "RNA"
+```
+
+The main function in Seurat to identify markers within clusters is the `FindAllMarkers` function, which compares one cluster to all other clusters and finds genes that fit the DE metrics included in the function call.
+
+```{r}
+markers <- FindAllMarkers(object = seurat, # select our object
+                          logfc.threshold = 0.25, # the threshold above which genes must be DE to be called markers. 
+                          min.pct = 0.1, # minimum % of cells in the cluster a marker must be expressed in. 
+                          only.pos = T, # set to TRUE will only return genes that are increased, not decreased. Simplifies outcome, can look at decreased genes specifically if needed.
+                          return.thresh = 0.05, # will only return results with a p < specified value
+                          test.use = "t") # there are multiple tests available to use. 
+
+# the default test is a wilcoxon test, however there was a paper that reviewed this and found the student's T-test (referred to as "t" in this function) was the most accurate and best to use in standard analysis.
+```
+
+The output from this will be in table form. From here, we can modify and filter this table to identify specific genes, identify the most DE genes per cluster etc.
+
+We can also export this table as a .csv file to be opened up in excel. I find it most useful to set this up as a .xlsx file where each cluster is a different sheet, it's easier to analyse in TopFunn that way. The following code will modify and export these files for future use.
+
+It should also be noted that we can read back in the exported .csv file, so we never have to run the FindAllMarker function again unless we need to alter the parameters. 
+
+
+```{r}
+# export the markers file as a csv
+write_csv(markers, path = "output/markers.csv")
+
+# export markers as an excel table divided by cluster
+# generate a list where each component is a filtered table of each cluster's markers
+export.markers <- lapply(0:(length(unique(seurat@active.ident))-1),
+                         function(x) {
+    markers %>%
+        dplyr::filter(cluster == x, p_val_adj < 0.05, avg_logFC > 0) %>%
+        dplyr::arrange(-avg_logFC) %>%
+        select(Gene = gene, LogFC = avg_logFC, pVal = p_val_adj)
+})
+# export the table to excel file
+WriteXLS::WriteXLS(export.markers,
+                   ExcelFileName = "output/cluster_markers.xls",
+                   SheetNames = paste0("Cluster ",
+                                    0:(length(unique(seurat@active.ident))-1)))
+```
+
+
+If we wanted to get a table showing the top 5 most differential genes per cluster, we can do filtering of the marker table.
+
+This is where using the pipe becomes very handy. We can pipe multiple functions together to generate a vector of the most expressed genes within each cluster.  
+
+```{r}
+top5 <- markers %>% arrange(cluster, -avg_logFC) %>% group_by(cluster) %>%  top_n(5, avg_logFC)
+top5
+top50 <- markers %>% arrange(cluster, -avg_logFC) %>% group_by(cluster) %>%  top_n(50, avg_logFC)
+top50
+```
+
+It can be used much simpler as well, lets filter for a specific gene
+
+```{r}
+markers %>% filter(gene == "COL1A1")
+```
+Filter the data to identify which clusters the following genes are expressed in: LYPD1, TCF21, EPCAM
+Change how the table is arranged: by gene, cluster, avg_logFC
+
+```{r}
+markers %>% filter(gene %in% c("LYPD1", "TCF21", "EPCAM")) %>% arrange(gene)
+```
+
+
+If we filter a table, we can use the genes listed for other visualisation.
+We can generate a heatmap:
+
+```{r}
+#DoHeatmap(seurat, features = top5$gene, size = 4, angle = 90, assay = "RNA")
+```
+
+We can also look at the expression in a DotPlot, which shows the same information in a different format
+
+```{r}
+DotPlot(seurat, features = unique(top5$gene), cols = c("grey", "red"), group.by = "Cluster") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  theme(legend.title=element_text(size=rel(0.5)))
+
+```
+
+While I look at this and can see that the genes for each cluster are the most highly expressed, they aren't particularly specific to each cluster. This is one of the concepts you have to keep in mind for this type of analysis. The original function called for genes highest when comparing the cluster of interest (say 0) to a combination of ALL other clusters (1 to 11).  
+
+We can either rerun the FindAllMarkers function with stricter rules, OR we can use the current output and perform some table manipulation to try and specify this to more specific genes per cluster.  
+
+```{r}
+colnames(markers)
+new.top5 <- 
+markers %>% mutate(pct.diff = pct.1 - pct.2) %>% filter(pct.1 > 0.3, pct.2 < 0.1) %>% 
+  group_by(cluster) %>%  top_n(5, avg_logFC)
+
+DotPlot(seurat, features = unique(new.top5$gene), cols = c("grey", "red"), group.by = "Cluster") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  theme(legend.title=element_text(size=rel(0.5)))
+```
+
+## Plotting with ggplot2 
+
+Normally I would do a lot more work on the data using just the Seurat functions, output from marker files and literary searches. Because this is about using R as well, I'm going to focus on how to generate plots using `ggplot2`. This will require me to pull out the relevent data from the Seurat object first.
+
+```{r}
+# The counts data is located:
+counts <- seurat@assays$RNA@counts
+class(counts)
+counts[1000:1005,1:5]
+```
+Counts gives us a sparse matrix of gene expression. We want this as a data frame so:  
+```{r}
+counts <- counts %>% as.data.frame() %>% t()
+counts[1:5, 1000:1005]
+
+```
+Now we have a data frame with rows as cells and columns as genes.  
+This information requires coordinates for plotting, which are present within the object:  
+
+```{r}
+coords <- data.frame(umap1 = seurat@reductions$umap@cell.embeddings[,1],
+                     umap2 = seurat@reductions$umap@cell.embeddings[,2],
+                     umap3 = seurat@reductions$umap@cell.embeddings[,3],
+                     row.names = colnames(seurat))
+head(coords)
+```
+
+Now we have the coordinates we can plot each point, and gene expression information to visualise metrics on the data. The last thing we need is the meta.data:  
+
+```{r}
+meta <- seurat@meta.data
+head(meta)
+```
+
+Finally we can combine all three of these dataframes into one large composite. If the rows are in the same order for each of these, we can simply bind each dataframe together:  
+
+```{r}
+table(rownames(counts) == rownames(coords), rownames(counts) == rownames(meta))
+
+df <- cbind(coords, meta, counts) # cbind: binds dataframes together by columns.
+
+```
+
+
+## Plotting in 2D
+
+We will first do some basic ggplots in 2D. Let's do a simple plot showing the number of Features (genes) per cell.  
+
+```{r}
+df %>% 
+  ggplot(aes(umap1, umap2)) + #sets up the coordinates
+  geom_point(aes(colour = nFeature_RNA))
+
+df %>% 
+  ggplot(aes(umap1, umap2)) + #sets up the coordinates
+  geom_point(aes(colour = COL3A1))
+
+df %>% 
+  ggplot(aes(umap1, umap2)) + #sets up the coordinates
+  geom_point(aes(colour = Cluster))
+```
+
+ggplot is able to identify whether the data it is calling is continuous or discrete. This can be changed though if needed:  
+
+```{r}
+df %>% 
+  ggplot(aes(umap1, umap2)) + #sets up the coordinates
+  geom_point(aes(colour = as.integer(Cluster))) 
+
+```
+
+
+
+
+To plot information on on the dimensional reduction, we can call either DimPlot for categorical (clusters, samples etc) or FeaturePlot for continual (gene expression levels, mitochondrial percentage etc.)
+
+```{r}
+DimPlot(seurat, group.by = "Cluster", split.by = "Phase") + 
+  labs(title = "Cell cycle phases in seurat organoid dataset")
+FeaturePlot(seurat, features = "percent.mt")
+```
+
+Let's do some data manipulation to generate a table allowing us to graph the cell contribution to each cluster. There is a nice function called `table()` which generates a contingency table based on your input. For this we can use the seurat object and ask to count the number of cells in each cluster:
+
+```{r}
+table(seurat$Cluster)
+```
+
+We need to get this into a format that we can use for graphing, so I usually call `as.data.frame()` for this:
+
+```{r}
+cells <- as.data.frame(table(seurat$Cluster))
+cells
+```
+
+Now we have this table, we can simply plot it out as a column graph. But lets add what are called "themes" to the plot to make it prettier and a bit more useful.
+
+```{r}
+cells %>% 
+  ggplot(aes(Var1, Freq)) +
+  geom_col()
+```
+
+What I want to do is have each bar coloured so that each bar has a different colour, relabel the axes, add a title, and change the background format to include axes lines and no grey boxes with each bar topped by the actual number of cells. This can be done using themes. 
+
+```{r}
+cells %>% 
+  ggplot(aes(Var1, Freq)) +
+  geom_col(aes(fill = Var1)) +
+  geom_text(aes(label=Freq), size = 3,
+            position=position_dodge(width = 1), vjust = -0.5, colour="black") +
+  xlab("Cluster") +
+  ylab("# of cells") +
+  ggtitle("Cell contributions per Cluster") +
+  theme_classic() + # preset themes you can use
+  scale_fill_discrete(name = "Cluster") +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 600)) +
+  theme(title = element_text(size = rel(1.3)))
+```
+
+There are so many resources online to help you modify graphs, if you want to do something different or change an aspect of any graph, google and you shall find.
+
+To practice using pre-existing functions, lets focus on a couple of Seurat plotting functions.  
+We can look to see the expression of a particular gene across each cluster. In Seurat the functions that best display this are the `FeaturePlot`,  `DotPlot` and `VlnPlot` functions:
+
+
+```{r}
+FeaturePlot(seurat, cols = c("grey", "red"), features = c("NPHS1", "LYPD1", "HNF4A", "PBX1")) 
+VlnPlot(seurat, group.by = "Cluster", pt.size = 0.01,
+        features = c("NPHS1", "LYPD1", "HNF4A", "PBX1"), ncol = 2, sort = "increasing") 
+DotPlot(seurat, group.by = "Cluster", features = c("NPHS1", "LYPD1", "HNF4A", "PBX1"), cols = c("lightgrey", "red"))
+```
+
+For VlnPlot, you can see I have used more inputs to the function than just the object and gene list. I have changed the pt.size variable to 0.01 to decrease the size of the points displayed, and used ncol=2 and sort=increasing to change how the plots are displayed. There are many build in customisations to many of these functions, and others. The best way to find what these are is to call ?function and read the information about it
+
+```{r}
+?VlnPlot()
+```
+
+For example, I can now see there is a function called "log" which will change my axes between normal and log fold representation:
+```{r}
+VlnPlot(seurat, group.by = "Cluster", pt.size = 0.01,
+        features = c("NPHS1", "LYPD1", "HNF4A", "PBX1"), ncol = 2, sort = "increasing", log = T)
+```
+
+
+The final plotting technique we will look at today is 3D plots. When I generated the UMAP I asked the function to do this for 3 dimensions, which we can now use to represent our data in an interactive 3D plot using the `plotly` package:
+
+```{r}
+library(plotly)
+plot_ly(data = df,
+        x = ~umap1, 
+        y = ~umap2,
+        z = ~umap3, type="scatter3d", mode = 'markers',
+        marker = list(opacity = 0.7, size=2),
+        color = data.frame(col = FetchData(seurat, vars = "NPHS1")[,1])$col) # use for continuous variables
+        #color = ~factor(df$Cluster) # use for discrete variables
+
+```
+
+
+Lets say you have an image you want to use in a presentation, or show colleagues. Exporting images can be done in a couple of ways:  
+ - calling a graphic device saving function such as `png()`  
+ - using `ggsave()` if saving a ggplot object (seurat functions generate ggplots)  
+ - printing into the plots window and saving from there.
+
+```{r}
+png(filename = "output/CellContribution.png", width = 360, height = 240, units = "mm", res = 300) # initiates graphics device and prepares file preparation
+cells %>% 
+  ggplot(aes(Var1, Freq)) +
+  geom_col(aes(fill = Var1)) +
+  geom_text(aes(label=Freq), size = 3,
+            position=position_dodge(width = 1), vjust = -0.5, colour="black") +
+  xlab("Cluster") +
+  ylab("# of cells") +
+  ggtitle("Cell contributions per Cluster") +
+  theme_classic() + # preset themes you can use
+  scale_fill_discrete(name = "Cluster") +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 600)) +
+  theme(title = element_text(size = rel(1.3)))
+dev.off() # turns off graphic device
+```
+
+```{r}
+cells %>% 
+  ggplot(aes(Var1, Freq)) +
+  geom_col(aes(fill = Var1)) +
+  geom_text(aes(label=Freq), size = 3,
+            position=position_dodge(width = 1), vjust = -0.5, colour="black") +
+  xlab("Cluster") +
+  ylab("# of cells") +
+  ggtitle("Cell contributions per Cluster") +
+  theme_classic() + # preset themes you can use
+  scale_fill_discrete(name = "Cluster") +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 600)) +
+  theme(title = element_text(size = rel(1.3)))
+
+ggsave(filename = "output/CellContribution_ggsave.jpg", dpi = 150, units = "mm", height = 240, width = 360)
+```
+
+
+
+Another way is to copy the script to the console or an R script file, run it there and interact in the Plots window.
+
+
+There are a few different options for exporting data out of Rstudio. You can use write_csv to make .csv files from tables or the package WriteXLS to make formatted excel files in .xls format.
+
+For Seurat objects, I prefer to save them as .rds files. Lets now update the exported Seurat file we have worked on again by exporting through write_rds().
+
+```{r}
+write_rds(x = seurat, path = "output/seurat/Organoid.rds")
+```
+
+To read this file back into Rstudio, you would use the complementary `read_rds` function:  
+
+```{r}
+seurat <- read_rds(path = "output/seurat/Organoid.rds")
+```
+
+
+If you want to see what packages you have loaded and used throughout your session, run the following:
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
