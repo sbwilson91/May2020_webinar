@@ -1,0 +1,5 @@
+
+for datnum in `seq 1 3`
+do qsub -v datnum=$datnum CATS_mdmb.pbs
+done
+
